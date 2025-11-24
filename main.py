@@ -282,3 +282,28 @@ async def test_db():
 @app.get("/")
 def root():
     return {"message": "Pytha API running 🎉 (Supabase REST mode)"}
+
+@app.get("/getUser")
+async def get_user_data(userId: str):
+    """
+    Renvoie toutes les données utilisateur (pour synchroniser GameState).
+    """
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            USERS_TABLE_URL,
+            params={"userId": f"eq.{userId}", "select": "*"},
+            headers=supabase_headers(prefer_return="return=representation"),
+            timeout=10.0,
+        )
+
+    if resp.status_code != 200:
+        raise HTTPException(status_code=500, detail=f"Supabase getUser error: {resp.text}")
+
+    data = resp.json()
+    if not data:
+        return {"exists": False}
+
+    return {
+        "exists": True,
+        "user": data[0]
+    }
