@@ -322,3 +322,23 @@ async def update_user(payload: dict):
 
     await patch_user(user_id, fields)
     return {"ok": True}
+
+@app.get("/checkUsername")
+async def check_username(username: str):
+    """
+    Vérifie si un username est disponible.
+    Retourne: { "available": true/false }
+    """
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            USERS_TABLE_URL,
+            params={"username": f"eq.{username}", "select": "username"},
+            headers=supabase_headers(prefer_return="return=representation"),
+            timeout=10.0
+        )
+
+    if resp.status_code != 200:
+        raise HTTPException(status_code=500, detail=f"Supabase error: {resp.text}")
+
+    data = resp.json()
+    return {"available": len(data) == 0}
