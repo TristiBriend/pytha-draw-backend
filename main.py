@@ -140,15 +140,30 @@ async def add_score(payload: ScoreUpdate):
     return {"ok": True}
 
 
-@app.post("/roundPlayed")
-async def round_played(payload: StatUpdate):
-    user = await get_user(payload.userId)
+@app.post("/roundsPlayed")
+async def rounds_played(payload: dict):
+    user_id = payload.get("userId")
+    rounds = payload.get("rounds")
+
+    if not user_id:
+        raise HTTPException(status_code=400, detail="Missing userId")
+    if rounds is None:
+        raise HTTPException(status_code=400, detail="Missing rounds")
+
+    user = await get_user(user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    rounds = (user.get("roundsPlayed") or 0) + 1
-    await patch_user(payload.userId, {"roundsPlayed": rounds})
-    return {"ok": True}
+    current_rounds = user.get("roundsPlayed") or 0
+    new_total = current_rounds + rounds
+
+    await patch_user(
+        user_id,
+        {"roundsPlayed": new_total}
+    )
+
+    return {"ok": True, "newRoundsPlayed": new_total}
+
 
 
 @app.post("/gamePlayed")
