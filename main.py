@@ -134,7 +134,7 @@ async def add_score(payload: ScoreUpdate):
         {
             "score_global": score_global,
             "score_weekly": score_weekly,
-            "lastActiveDate": now_iso,
+            "lastactivedate": now_iso,
         },
     )
     return {"ok": True}
