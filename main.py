@@ -342,3 +342,39 @@ async def check_username(username: str):
 
     data = resp.json()
     return {"available": len(data) == 0}
+
+@app.post("/resetUser")
+async def reset_user(data: dict):
+
+    user_id = data.get("userId")
+    username = data.get("username")
+    last_active = data.get("lastactivedate")
+    reset_sub = data.get("resetSubscriptionData", False)  # 👈 PAR DÉFAUT : False
+
+    if not user_id:
+        raise HTTPException(status_code=400, detail="Missing userId")
+
+    reset_values = {
+        "username": username,
+        "score_global": 0,
+        "score_weekly": 0,
+        "gamesPlayed": 0,
+        "roundsPlayed": 0,
+        "remainingPlays": 0,
+        "lastactivedate": last_active
+    }
+
+    # Reset abonnement uniquement si demandé explicitement
+    if reset_sub:
+        reset_values["subscriptionStatus"] = False
+        reset_values["originalTransactionId"] = None
+
+    result = supabase.table("users") \
+        .update(reset_values) \
+        .eq("userId", user_id) \
+        .execute()
+
+    if len(result.data) == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return {"ok": True}
