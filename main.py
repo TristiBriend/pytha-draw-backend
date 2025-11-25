@@ -342,7 +342,6 @@ async def check_username(username: str):
 
     data = resp.json()
     return {"available": len(data) == 0}
-
 @app.post("/resetUser")
 async def reset_user(data: dict):
 
