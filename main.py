@@ -369,7 +369,7 @@ async def reset_user(data: dict):
         raise HTTPException(status_code=400, detail="Missing userId")
 
     reset_values = {
-        "username": username,
+        "username": "",
         "score_global": 0,
         "score_weekly": 0,
         "gamesPlayed": 0,
