@@ -307,3 +307,18 @@ async def get_user_data(userId: str):
         "exists": True,
         "user": data[0]
     }
+
+@app.post("/updateUser")
+async def update_user(payload: dict):
+    user_id = payload.get("userId")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="Missing userId")
+
+    # remove userId from fields we patch
+    fields = {k: v for k, v in payload.items() if k != "userId"}
+
+    if not fields:
+        return {"ok": True}
+
+    await patch_user(user_id, fields)
+    return {"ok": True}
