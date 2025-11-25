@@ -349,7 +349,7 @@ async def reset_user(data: dict):
     user_id = data.get("userId")
     username = data.get("username")
     last_active = data.get("lastactivedate")
-    reset_sub = data.get("resetSubscriptionData", False)  # 👈 PAR DÉFAUT : False
+    reset_sub = data.get("resetSubscriptionData", False)
 
     if not user_id:
         raise HTTPException(status_code=400, detail="Missing userId")
@@ -361,20 +361,23 @@ async def reset_user(data: dict):
         "gamesPlayed": 0,
         "roundsPlayed": 0,
         "remainingPlays": 0,
-        "lastactivedate": last_active
+        "lastactivedate": last_active,
     }
 
-    # Reset abonnement uniquement si demandé explicitement
     if reset_sub:
         reset_values["subscriptionStatus"] = False
         reset_values["originalTransactionId"] = None
 
-    result = supabase.table("users") \
-        .update(reset_values) \
-        .eq("userId", user_id) \
-        .execute()
+    async with httpx.AsyncClient() as client:
+        resp = await client.patch(
+            USERS_TABLE_URL,
+            params={"userId": f"eq.{user_id}"},
+            json=reset_values,
+            headers=supabase_headers(prefer_return="return=minimal"),
+            timeout=10.0,
+        )
 
-    if len(result.data) == 0:
-        raise HTTPException(status_code=404, detail="User not found")
+    if resp.status_code not in (200, 204):
+        raise HTTPException(status_code=500, detail=f"Supabase resetUser error: {resp.text}")
 
     return {"ok": True}
