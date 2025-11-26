@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import httpx
 import os
-from datetime import datetime
+from datetime import datetime, timedelta, date, timezone
 
 app = FastAPI()
 
@@ -93,6 +93,113 @@ async def patch_user(user_id: str, fields: dict):
     if resp.status_code not in (200, 204):
         raise HTTPException(status_code=500, detail=f"Supabase patch error: {resp.text}")
 
+def parse_ts(value):
+    """
+    Convertit un timestamp Supabase (ISO string ou datetime) en datetime UTC.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        # Supabase renvoie souvent une string ISO
+        dt = datetime.fromisoformat(value)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def update_lives(row: dict) -> dict:
+    """
+    Met à jour les vies en fonction du temps et du bonus quotidien.
+    Ajoute row["nextLifeInSeconds"] pour l'app.
+    Ne touche PAS aux vies achetées (boughtLives).
+    """
+    now = datetime.now(timezone.utc)
+    today = now.date()
+
+    lives = row.get("naturalLives") or 0
+    max_lives = row.get("maxNaturalLives") or 3
+    interval_minutes = row.get("lifeRegenIntervalMinutes") or 30
+    last_regen = parse_ts(row.get("lastLifeRegenAt"))
+    last_bonus = row.get("lastDailyBonus")
+    subscription = row.get("subscriptionStatus", False)
+
+    # Abonné : vies illimitées côté logique → on fixe au max, pas de timer
+    if subscription:
+        row["naturalLives"] = max_lives
+        row["lastLifeRegenAt"] = now.isoformat()
+        row["lastDailyBonus"] = today.isoformat()
+        row["nextLifeInSeconds"] = 0
+        return row
+
+    if last_regen is None:
+        last_regen = now
+
+    # 1) Recharge automatique des vies naturelles
+    if lives < max_lives:
+        interval = timedelta(minutes=interval_minutes)
+        elapsed = now - last_regen
+        gained = elapsed // interval  # intervalles complets
+
+        if gained > 0:
+            lives = min(max_lives, lives + int(gained))
+            last_regen = last_regen + gained * interval
+
+    # 2) Bonus quotidien (+1 si pas encore donné aujourd'hui)
+    if last_bonus is None:
+        last_bonus_date = None
+    elif isinstance(last_bonus, date):
+        last_bonus_date = last_bonus
+    else:
+        # Supabase renvoie souvent '2025-11-25'
+        last_bonus_date = date.fromisoformat(last_bonus)
+
+    if last_bonus_date is None or last_bonus_date < today:
+        if lives < max_lives:
+            lives = min(max_lives, lives + 1)
+        last_bonus_date = today
+
+    # 3) Temps avant la prochaine vie
+    if lives >= max_lives:
+        next_life_in = 0
+        # on réarme pour la suite
+        last_regen = now
+    else:
+        interval = timedelta(minutes=interval_minutes)
+        elapsed = now - last_regen
+        remaining = interval - elapsed
+        next_life_in = max(0, int(remaining.total_seconds()))
+
+    row["naturalLives"] = lives
+    row["lastLifeRegenAt"] = last_regen.isoformat()
+    row["lastDailyBonus"] = last_bonus_date.isoformat() if last_bonus_date else None
+    row["nextLifeInSeconds"] = next_life_in
+
+    return row
+
+async def refresh_user_lives(user_id: str):
+    """
+    Récupère l'utilisateur, applique update_lives,
+    et sauvegarde les champs de vies dans Supabase.
+    Retourne le dict utilisateur mis à jour.
+    """
+    user = await get_user(user_id)
+    if not user:
+        return None
+
+    updated = update_lives(user)
+
+    fields = {
+        "naturalLives": updated["naturalLives"],
+        "lastLifeRegenAt": updated["lastLifeRegenAt"],
+        "lastDailyBonus": updated["lastDailyBonus"],
+        "lastactivedate": datetime.utcnow().isoformat(),
+    }
+
+    await patch_user(user_id, fields)
+    # On renvoie l'objet complet (avec nextLifeInSeconds dedans)
+    return updated
 
 # ============================
 #  ROUTES
@@ -212,7 +319,6 @@ async def leaderboard_weekly():
         raise HTTPException(status_code=500, detail=f"Supabase leaderboard weekly error: {resp.text}")
     return resp.json()
 
-
 @app.post("/purchase/pack")
 async def purchase_pack(payload: PackPurchase):
     user = await get_user(payload.userId)
@@ -226,36 +332,74 @@ async def purchase_pack(payload: PackPurchase):
     else:
         amount = 0
 
-    remaining = (user.get("remainingPlays") or 0) + amount
-    await patch_user(payload.userId, {"remainingPlays": remaining})
-    return {"ok": True, "remainingPlays": remaining}
+    if amount <= 0:
+        return {"ok": True, "boughtLives": user.get("boughtLives") or 0}
 
+    bought = (user.get("boughtLives") or 0) + amount
+
+    await patch_user(payload.userId, {
+        "boughtLives": bought
+        # tu peux laisser remainingPlays tranquille ou le mettre à 0 si tu veux couper
+        # "remainingPlays": 0
+    })
+
+    return {"ok": True, "boughtLives": bought}
 
 @app.post("/consumePlay")
 async def consume_play(payload: StatUpdate):
-    user = await get_user(payload.userId)
+    user = await refresh_user_lives(payload.userId)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    remaining = user.get("remainingPlays") or 0
-    if remaining <= 0:
-        raise HTTPException(status_code=400, detail="No remaining plays")
+    subscription = user.get("subscriptionStatus", False)
+    natural = user.get("naturalLives") or 0
+    max_lives = user.get("maxNaturalLives") or 3
+    bought = user.get("boughtLives") or 0
 
-    remaining -= 1
-    await patch_user(payload.userId, {"remainingPlays": remaining})
-    return {"ok": True, "remainingPlays": remaining}
+    # Abonné : pas de limite de vie (on ne consomme rien)
+    if subscription:
+        return {
+            "ok": True,
+            "naturalLives": natural,
+            "maxNaturalLives": max_lives,
+            "boughtLives": bought,
+            "premiumUnlimited": True,
+        }
 
+    # On consomme d'abord une vie naturelle, sinon une vie achetée
+    last_life_regen_at = user.get("lastLifeRegenAt")
+    now_iso = datetime.utcnow().isoformat()
 
-@app.post("/subscription/update")
-async def subscription(payload: SubscriptionUpdate):
+    if natural > 0:
+        natural -= 1
+
+        # Si on vient de passer de plein -> pas plein, on arme un timer
+        if natural == max_lives - 1:
+            last_life_regen_at = now_iso
+
+    elif bought > 0:
+        bought -= 1
+    else:
+        raise HTTPException(status_code=400, detail="No lives left")
+
+    # Sauvegarde
     await patch_user(
         payload.userId,
         {
-            "originalTransactionId": payload.originalTransactionId,
-            "subscriptionStatus": payload.isActive,
+            "naturalLives": natural,
+            "boughtLives": bought,
+            "lastLifeRegenAt": last_life_regen_at,
+            "lastactivedate": now_iso,
         },
     )
-    return {"ok": True}
+
+    return {
+        "ok": True,
+        "naturalLives": natural,
+        "maxNaturalLives": max_lives,
+        "boughtLives": bought,
+        "premiumUnlimited": False,
+    }
 
 
 @app.post("/resetWeekly")
@@ -301,26 +445,16 @@ def root():
 @app.get("/getUser")
 async def get_user_data(userId: str):
     """
-    Renvoie toutes les données utilisateur (pour synchroniser GameState).
+    Renvoie toutes les données utilisateur (pour synchroniser GameState),
+    avec les vies mises à jour (naturalLives, boughtLives, nextLifeInSeconds).
     """
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            USERS_TABLE_URL,
-            params={"userId": f"eq.{userId}", "select": "*"},
-            headers=supabase_headers(prefer_return="return=representation"),
-            timeout=10.0,
-        )
-
-    if resp.status_code != 200:
-        raise HTTPException(status_code=500, detail=f"Supabase getUser error: {resp.text}")
-
-    data = resp.json()
-    if not data:
+    user = await refresh_user_lives(userId)
+    if not user:
         return {"exists": False}
 
     return {
         "exists": True,
-        "user": data[0]
+        "user": user
     }
 
 @app.post("/updateUser")
@@ -337,7 +471,6 @@ async def update_user(payload: dict):
 
     await patch_user(user_id, fields)
     return {"ok": True}
-
 @app.get("/checkUsername")
 async def check_username(username: str):
     """
@@ -357,9 +490,10 @@ async def check_username(username: str):
 
     data = resp.json()
     return {"available": len(data) == 0}
+
+
 @app.post("/resetUser")
 async def reset_user(data: dict):
-
     user_id = data.get("userId")
     username = data.get("username")
     last_active = data.get("lastactivedate")
@@ -368,6 +502,10 @@ async def reset_user(data: dict):
     if not user_id:
         raise HTTPException(status_code=400, detail="Missing userId")
 
+    # Si last_active est absent, on met maintenant
+    if not last_active:
+        last_active = datetime.utcnow().isoformat()
+
     reset_values = {
         "username": "",
         "score_global": 0,
@@ -375,6 +513,12 @@ async def reset_user(data: dict):
         "gamesPlayed": 0,
         "roundsPlayed": 0,
         "remainingPlays": 0,
+        "naturalLives": 3,
+        "maxNaturalLives": 3,
+        "lifeRegenIntervalMinutes": 30,
+        "lastLifeRegenAt": last_active,
+        "lastDailyBonus": None,
+        "boughtLives": 0,
         "lastactivedate": last_active,
     }
 
