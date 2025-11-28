@@ -561,3 +561,54 @@ async def reset_user(data: dict):
         raise HTTPException(status_code=500, detail=f"Supabase resetUser error: {resp.text}")
 
     return {"ok": True}
+    
+    
+@app.post("/rewarded")
+async def rewarded_ad(payload: StatUpdate):
+    """
+    +1 vie achetée après une pub Rewarded Ad.
+    Incrémente rewardedAdsTotalCount de façon cumulative (jamais remis à zéro).
+    """
+    user = await get_user(payload.userId)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    subscription = user.get("subscriptionStatus", False)
+    natural = user.get("naturallives") or 0
+    max_lives = user.get("maxnaturallives") or 3
+    bought = user.get("boughtlives") or 0
+
+    # compteur cumulatif
+    total_ads = user.get("rewardedAdsTotalCount") or 0
+
+    # Abonné : vies illimitées
+    if subscription:
+        return {
+            "ok": True,
+            "premiumUnlimited": True,
+            "naturalLives": natural,
+            "boughtLives": bought,
+            "rewardedAdsTotalCount": total_ads
+        }
+
+    # 🎁 Rewarded Ad = +1 vie achetée
+    bought += 1
+    total_ads += 1
+
+    await patch_user(
+        payload.userId,
+        {
+            "boughtlives": bought,
+            "rewardedAdsTotalCount": total_ads,
+            "lastactivedate": datetime.utcnow().isoformat(),
+        }
+    )
+
+    return {
+        "ok": True,
+        "premiumUnlimited": False,
+        "naturalLives": natural,
+        "boughtLives": bought,
+        "rewardedAdsTotalCount": total_ads,
+        "maxNaturalLives": max_lives
+    }
