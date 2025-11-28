@@ -64,7 +64,7 @@ class RadarLevelStats(BaseModel):
     level: int
 
     score: float
-    precision: float
+    precision_value: float
     speed: float
 
     draw: float
@@ -667,7 +667,7 @@ def default_radar_row(user_id: str, level: int):
         "userId": user_id,
         "level": level,
         "score": 0,
-        "precision": 0,
+        "precision_value": 0,
         "speed": 0,
         "draw": 0,
         "derivative": 0,
@@ -711,7 +711,7 @@ def update_radar(payload: RadarLevelStats):
         "level": payload.level,
 
         "score":      better(payload.score,      row.get("score") if row else None),
-        "precision":  better(payload.precision,  row.get("precision") if row else None),
+        "precision_value":  better(payload.precision_value,  row.get("precision_value") if row else None),
         "speed":      better(payload.speed,      row.get("speed") if row else None),
 
         "draw":       better(payload.draw,       row.get("draw") if row else None),
