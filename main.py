@@ -684,7 +684,6 @@ router = APIRouter()
 # ============================
 #  RADAR UPDATE
 # ============================
-
 @router.post("/radar/update")
 def update_radar(payload: RadarLevelStats):
 
@@ -711,7 +710,7 @@ def update_radar(payload: RadarLevelStats):
         "level": payload.level,
 
         "score":      better(payload.score,      row.get("score") if row else None),
-        "precision_value":  better(payload.precision_value,  row.get("precision_value") if row else None),
+        "precision_value": better(payload.precision_value, row.get("precision_value") if row else None),
         "speed":      better(payload.speed,      row.get("speed") if row else None),
 
         "draw":       better(payload.draw,       row.get("draw") if row else None),
@@ -723,7 +722,7 @@ def update_radar(payload: RadarLevelStats):
         "updatedAt": datetime.utcnow().isoformat(),
     }
 
-    # 3. Upsert back into Supabase
+    # 3. Upsert into Supabase
     result = (
         supabase
             .table("user_radar")
@@ -731,8 +730,8 @@ def update_radar(payload: RadarLevelStats):
             .execute()
     )
 
-    if result.error:
-        raise HTTPException(status_code=500, detail=result.error.message)
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Supabase returned no data")
 
     return result.data[0]
 
@@ -740,7 +739,6 @@ def update_radar(payload: RadarLevelStats):
 # ============================
 #  RADAR INIT (3 niveaux)
 # ============================
-
 @router.post("/radar/init")
 def radar_init(payload: dict):
     user_id = payload.get("userId")
@@ -760,16 +758,16 @@ def radar_init(payload: dict):
             .execute()
     )
 
-    if result.error:
-        raise HTTPException(status_code=500, detail=result.error.message)
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Supabase returned no data")
 
     return {"ok": True}
+
 
 
 # ============================
 #  RADAR GET
 # ============================
-
 @router.get("/radar/get")
 def radar_get(userId: str):
 
@@ -782,8 +780,8 @@ def radar_get(userId: str):
             .execute()
     )
 
-    if result.error:
-        raise HTTPException(status_code=500, detail=result.error.message)
+    if result.data is None:
+        raise HTTPException(status_code=500, detail="Supabase returned no data")
 
     return {
         "userId": userId,
@@ -791,10 +789,10 @@ def radar_get(userId: str):
     }
 
 
+
 # ============================
 #  RADAR RESET
 # ============================
-
 @router.post("/radar/reset")
 def radar_reset(payload: dict):
 
@@ -815,8 +813,8 @@ def radar_reset(payload: dict):
             .execute()
     )
 
-    if result.error:
-        raise HTTPException(status_code=500, detail=result.error.message)
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Supabase returned no data")
 
     return {"ok": True}
 
