@@ -73,7 +73,7 @@ class RadarLevelStats(BaseModel):
     rightpart: float
     guess: float
 
-    updatedAt: datetime | None = None
+    updatedat: datetime | None = None
 
 
 # ============================
@@ -674,7 +674,7 @@ def default_radar_row(user_id: str, level: int):
         "canonical": 0,
         "rightpart": 0,
         "guess": 0,
-        "updatedAt": datetime.utcnow().isoformat()
+        "updatedat": datetime.utcnow().isoformat()
     }
 
 
@@ -719,7 +719,7 @@ def update_radar(payload: RadarLevelStats):
         "rightpart":  better(payload.rightpart,  row.get("rightpart") if row else None),
         "guess":      better(payload.guess,      row.get("guess") if row else None),
 
-        "updatedAt": datetime.utcnow().isoformat(),
+        "updatedat": datetime.utcnow().isoformat(),
     }
 
     # 3. Upsert into Supabase
