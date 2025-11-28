@@ -1,8 +1,5 @@
 fastapi
 uvicorn
-supabase==1.0.6
-storage3==0.5.4
-realtime==1.0.3
-gotrue==1.0.2
+supabase
 python-dotenv
 pydantic
