@@ -1,7 +1,8 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import APIRouter, FastAPI, HTTPException
 from pydantic import BaseModel
 import httpx
 import os
+from supabase import create_client
 from datetime import datetime, timedelta, date, timezone
 
 app = FastAPI()
@@ -56,6 +57,23 @@ class SubscriptionUpdate(BaseModel):
     userId: str
     originalTransactionId: str
     isActive: bool
+    
+    
+class RadarLevelStats(BaseModel):
+    userId: str
+    level: int
+
+    score: float
+    precision: float
+    speed: float
+
+    draw: float
+    derivative: float
+    canonical: float
+    rightpart: float
+    guess: float
+
+    updatedAt: datetime | None = None
 
 
 # ============================
@@ -212,8 +230,9 @@ async def refresh_user_lives(user_id: str):
 @app.post("/initUser")
 async def init_user(payload: UserInit):
     """
-    Crée un user si inexistant.
+    Crée un user si inexistant + initialise son radar (3 niveaux).
     """
+    # 1. Création / merge utilisateur
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             USERS_TABLE_URL,
@@ -225,9 +244,33 @@ async def init_user(payload: UserInit):
             headers=supabase_headers(prefer_return="resolution=merge-duplicates"),
             timeout=10.0,
         )
+
     if resp.status_code not in (200, 201, 204):
-        raise HTTPException(status_code=500, detail=f"Supabase initUser error: {resp.text}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Supabase initUser error: {resp.text}"
+        )
+
+    # 2. Initialise radar 1, 2, 3 pour l'utilisateur
+    rows = [
+        default_radar_row(payload.userId, 1),
+        default_radar_row(payload.userId, 2),
+        default_radar_row(payload.userId, 3),
+    ]
+
+    result = (
+        supabase
+            .table("user_radar")
+            .upsert(rows, on_conflict="userId,level")
+            .execute()
+    )
+
+    if result.error:
+        raise HTTPException(status_code=500, detail=result.error.message)
+
     return {"ok": True}
+
+
 
 
 @app.post("/addScore")
@@ -612,3 +655,171 @@ async def rewarded_ad(payload: StatUpdate):
         "rewardedAdsTotalCount": total_ads,
         "maxNaturalLives": max_lives
     }
+# ============================
+#  RADAR HELPERS
+# ============================
+
+supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+
+def default_radar_row(user_id: str, level: int):
+    """Crée une ligne radar vide pour un niveau donné."""
+    return {
+        "userId": user_id,
+        "level": level,
+        "score": 0,
+        "precision": 0,
+        "speed": 0,
+        "draw": 0,
+        "derivative": 0,
+        "canonical": 0,
+        "rightpart": 0,
+        "guess": 0,
+        "updatedAt": datetime.utcnow().isoformat()
+    }
+
+
+router = APIRouter()
+
+
+# ============================
+#  RADAR UPDATE
+# ============================
+
+@router.post("/radar/update")
+def update_radar(payload: RadarLevelStats):
+
+    # 1. Load current radar
+    existing = (
+        supabase
+            .table("user_radar")
+            .select("*")
+            .eq("userId", payload.userId)
+            .eq("level", payload.level)
+            .execute()
+    )
+
+    row = existing.data[0] if existing.data else None
+
+    # 2. Merge (keep only better values)
+    def better(new, old):
+        if old is None:
+            return new
+        return max(new, old)
+
+    merged = {
+        "userId": payload.userId,
+        "level": payload.level,
+
+        "score":      better(payload.score,      row.get("score") if row else None),
+        "precision":  better(payload.precision,  row.get("precision") if row else None),
+        "speed":      better(payload.speed,      row.get("speed") if row else None),
+
+        "draw":       better(payload.draw,       row.get("draw") if row else None),
+        "derivative": better(payload.derivative, row.get("derivative") if row else None),
+        "canonical":  better(payload.canonical,  row.get("canonical") if row else None),
+        "rightpart":  better(payload.rightpart,  row.get("rightpart") if row else None),
+        "guess":      better(payload.guess,      row.get("guess") if row else None),
+
+        "updatedAt": datetime.utcnow().isoformat(),
+    }
+
+    # 3. Upsert back into Supabase
+    result = (
+        supabase
+            .table("user_radar")
+            .upsert(merged, on_conflict="userId,level")
+            .execute()
+    )
+
+    if result.error:
+        raise HTTPException(status_code=500, detail=result.error.message)
+
+    return result.data[0]
+
+
+# ============================
+#  RADAR INIT (3 niveaux)
+# ============================
+
+@router.post("/radar/init")
+def radar_init(payload: dict):
+    user_id = payload.get("userId")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="Missing userId")
+
+    rows = [
+        default_radar_row(user_id, 1),
+        default_radar_row(user_id, 2),
+        default_radar_row(user_id, 3),
+    ]
+
+    result = (
+        supabase
+            .table("user_radar")
+            .upsert(rows, on_conflict="userId,level")
+            .execute()
+    )
+
+    if result.error:
+        raise HTTPException(status_code=500, detail=result.error.message)
+
+    return {"ok": True}
+
+
+# ============================
+#  RADAR GET
+# ============================
+
+@router.get("/radar/get")
+def radar_get(userId: str):
+
+    result = (
+        supabase
+            .table("user_radar")
+            .select("*")
+            .eq("userId", userId)
+            .order("level", desc=False)
+            .execute()
+    )
+
+    if result.error:
+        raise HTTPException(status_code=500, detail=result.error.message)
+
+    return {
+        "userId": userId,
+        "levels": result.data
+    }
+
+
+# ============================
+#  RADAR RESET
+# ============================
+
+@router.post("/radar/reset")
+def radar_reset(payload: dict):
+
+    user_id = payload.get("userId")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="Missing userId")
+
+    rows = [
+        default_radar_row(user_id, 1),
+        default_radar_row(user_id, 2),
+        default_radar_row(user_id, 3),
+    ]
+
+    result = (
+        supabase
+            .table("user_radar")
+            .upsert(rows, on_conflict="userId,level")
+            .execute()
+    )
+
+    if result.error:
+        raise HTTPException(status_code=500, detail=result.error.message)
+
+    return {"ok": True}
+
+
+# IMPORTANT – add routes
+app.include_router(router)
