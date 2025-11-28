@@ -656,22 +656,13 @@ async def rewarded_ad(payload: StatUpdate):
         "maxNaturalLives": max_lives
     }
 # ============================
-#  RADAR – REST API version (no supabase client)
+#  RADAR HELPERS
 # ============================
 
-RADAR_TABLE_URL = f"{SUPABASE_URL}/rest/v1/user_radar"
-
-
-def radar_headers():
-    return {
-        "apikey": SUPABASE_SERVICE_ROLE_KEY,
-        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
-        "Content-Type": "application/json",
-        "Prefer": "return=representation",
-    }
-
+supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
 def default_radar_row(user_id: str, level: int):
+    """Crée une ligne radar vide pour un niveau donné."""
     return {
         "userId": user_id,
         "level": level,
@@ -687,92 +678,74 @@ def default_radar_row(user_id: str, level: int):
     }
 
 
-# ----------------------------
+router = APIRouter()
+
+
+# ============================
 #  RADAR UPDATE
-# ----------------------------
+# ============================
+
 @router.post("/radar/update")
-async def radar_update(payload: RadarLevelStats):
+def update_radar(payload: RadarLevelStats):
 
-    # 1) Charger le radar existant
-    async with httpx.AsyncClient() as client:
-        res = await client.get(
-            RADAR_TABLE_URL,
-            params={
-                "userId": f"eq.{payload.userId}",
-                "level": f"eq.{payload.level}",
-                "select": "*"
-            },
-            headers=radar_headers(),
-            timeout=10.0,
-        )
+    # 1. Load current radar
+    existing = (
+        supabase
+            .table("user_radar")
+            .select("*")
+            .eq("userId", payload.userId)
+            .eq("level", payload.level)
+            .execute()
+    )
 
-    if res.status_code != 200:
-        raise HTTPException(500, f"Radar SELECT error: {res.text}")
+    row = existing.data[0] if existing.data else None
 
-    existing = res.json()
-    row = existing[0] if existing else {}
-
+    # 2. Merge (keep only better values)
     def better(new, old):
-        return new if old is None else max(new, old)
+        if old is None:
+            return new
+        return max(new, old)
 
     merged = {
         "userId": payload.userId,
         "level": payload.level,
-        "score":      better(payload.score,      row.get("score")),
-        "precision":  better(payload.precision,  row.get("precision")),
-        "speed":      better(payload.speed,      row.get("speed")),
-        "draw":       better(payload.draw,       row.get("draw")),
-        "derivative": better(payload.derivative, row.get("derivative")),
-        "canonical":  better(payload.canonical,  row.get("canonical")),
-        "rightpart":  better(payload.rightpart,  row.get("rightpart")),
-        "guess":      better(payload.guess,      row.get("guess")),
-        "updatedAt": datetime.utcnow().isoformat()
+
+        "score":      better(payload.score,      row.get("score") if row else None),
+        "precision":  better(payload.precision,  row.get("precision") if row else None),
+        "speed":      better(payload.speed,      row.get("speed") if row else None),
+
+        "draw":       better(payload.draw,       row.get("draw") if row else None),
+        "derivative": better(payload.derivative, row.get("derivative") if row else None),
+        "canonical":  better(payload.canonical,  row.get("canonical") if row else None),
+        "rightpart":  better(payload.rightpart,  row.get("rightpart") if row else None),
+        "guess":      better(payload.guess,      row.get("guess") if row else None),
+
+        "updatedAt": datetime.utcnow().isoformat(),
     }
 
-    # 3) Upsert REST
-    async with httpx.AsyncClient() as client:
-        res = await client.post(
-            RADAR_TABLE_URL,
-            params={"on_conflict": "userId,level"},
-            json=merged,
-            headers=radar_headers(),
-            timeout=10.0,
-        )
+    # 3. Upsert back into Supabase
+    result = (
+        supabase
+            .table("user_radar")
+            .upsert(merged, on_conflict="userId,level")
+            .execute()
+    )
 
-    if res.status_code not in (200, 201):
-        raise HTTPException(500, f"Radar UPSERT error: {res.text}")
+    if result.error:
+        raise HTTPException(status_code=500, detail=result.error.message)
 
-    return {"ok": True, "updated": merged}
+    return result.data[0]
 
 
-# ----------------------------
-#  RADAR GET
-# ----------------------------
-@router.get("/radar/get")
-async def radar_get(userId: str):
+# ============================
+#  RADAR INIT (3 niveaux)
+# ============================
 
-    async with httpx.AsyncClient() as client:
-        res = await client.get(
-            RADAR_TABLE_URL,
-            params={"userId": f"eq.{userId}", "select": "*", "order": "level.asc"},
-            headers=radar_headers(),
-            timeout=10.0,
-        )
-
-    if res.status_code != 200:
-        raise HTTPException(500, f"Radar SELECT error: {res.text}")
-
-    return {"userId": userId, "levels": res.json()}
-
-
-# ----------------------------
-#  RADAR RESET
-# ----------------------------
-@router.post("/radar/reset")
-async def radar_reset(payload: dict):
+@router.post("/radar/init")
+def radar_init(payload: dict):
     user_id = payload.get("userId")
     if not user_id:
-        raise HTTPException(400, "Missing userId")
+        raise HTTPException(status_code=400, detail="Missing userId")
 
     rows = [
         default_radar_row(user_id, 1),
@@ -780,17 +753,70 @@ async def radar_reset(payload: dict):
         default_radar_row(user_id, 3),
     ]
 
-    async with httpx.AsyncClient() as client:
-        res = await client.post(
-            RADAR_TABLE_URL,
-            params={"on_conflict": "userId,level"},
-            json=rows,
-            headers=radar_headers(),
-            timeout=10.0,
-        )
+    result = (
+        supabase
+            .table("user_radar")
+            .upsert(rows, on_conflict="userId,level")
+            .execute()
+    )
 
-    if res.status_code not in (200, 201):
-        raise HTTPException(500, f"Radar RESET error: {res.text}")
+    if result.error:
+        raise HTTPException(status_code=500, detail=result.error.message)
+
+    return {"ok": True}
+
+
+# ============================
+#  RADAR GET
+# ============================
+
+@router.get("/radar/get")
+def radar_get(userId: str):
+
+    result = (
+        supabase
+            .table("user_radar")
+            .select("*")
+            .eq("userId", userId)
+            .order("level", desc=False)
+            .execute()
+    )
+
+    if result.error:
+        raise HTTPException(status_code=500, detail=result.error.message)
+
+    return {
+        "userId": userId,
+        "levels": result.data
+    }
+
+
+# ============================
+#  RADAR RESET
+# ============================
+
+@router.post("/radar/reset")
+def radar_reset(payload: dict):
+
+    user_id = payload.get("userId")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="Missing userId")
+
+    rows = [
+        default_radar_row(user_id, 1),
+        default_radar_row(user_id, 2),
+        default_radar_row(user_id, 3),
+    ]
+
+    result = (
+        supabase
+            .table("user_radar")
+            .upsert(rows, on_conflict="userId,level")
+            .execute()
+    )
+
+    if result.error:
+        raise HTTPException(status_code=500, detail=result.error.message)
 
     return {"ok": True}
 
