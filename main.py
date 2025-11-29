@@ -226,13 +226,11 @@ async def refresh_user_lives(user_id: str):
 # ============================
 #  ROUTES
 # ============================
-
 @app.post("/initUser")
 async def init_user(payload: UserInit):
     """
-    Crée un user si inexistant + initialise son radar (3 niveaux).
+    Crée / merge un user, mais NE TOUCHE PAS aux radars.
     """
-    # 1. Création / merge utilisateur
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             USERS_TABLE_URL,
@@ -251,26 +249,8 @@ async def init_user(payload: UserInit):
             detail=f"Supabase initUser error: {resp.text}"
         )
 
-    # 2. Initialise radar 1, 2, 3 pour l'utilisateur
-    rows = [
-        default_radar_row(payload.userId, 1),
-        default_radar_row(payload.userId, 2),
-        default_radar_row(payload.userId, 3),
-    ]
-
-    result = (
-        supabase
-            .table("user_radar")
-            .upsert(rows, on_conflict="userId,level")
-            .execute()
-    )
-
-   
-    if not result.data:
-        raise HTTPException(status_code=500, detail="Supabase returned no data")
-
+    # ❌ plus de création / reset radar ici
     return {"ok": True}
-
 
 
 
