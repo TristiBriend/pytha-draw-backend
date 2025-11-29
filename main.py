@@ -265,8 +265,9 @@ async def init_user(payload: UserInit):
             .execute()
     )
 
-    if result.error:
-        raise HTTPException(status_code=500, detail=result.error.message)
+   
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Supabase returned no data")
 
     return {"ok": True}
 
